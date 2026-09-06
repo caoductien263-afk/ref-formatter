@@ -71,7 +71,7 @@ def extract_guideline_from_file_or_text(
     text: Optional[str] = None,
     file_bytes: Optional[bytes] = None,
     filename: Optional[str] = None,
-    model_name: str = "gemini-2.0-flash",
+    model_name: str = "gemini-3.6-flash",
 ) -> str:
     """
     Extracts and synthesizes academic reference rules across 8 standard dimensions.
@@ -193,7 +193,7 @@ def format_references(
     api_key: str,
     guideline_summary: str,
     raw_references: str,
-    model_name: str = "gemini-2.0-flash",
+    model_name: str = "gemini-3.6-flash",
 ) -> str:
     """
     Formats raw references according to approved guideline rules.
