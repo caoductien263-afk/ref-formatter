@@ -24,6 +24,27 @@ st.set_page_config(
     initial_sidebar_state="expanded",
 )
 
+import json
+
+DB_FILE = 'saved_journals.json'
+
+def load_saved_journals():
+    if os.path.exists(DB_FILE):
+        try:
+            with open(DB_FILE, 'r', encoding='utf-8') as f:
+                return json.load(f)
+        except Exception:
+            pass
+    return {}
+
+def save_journal_summary(name, summary):
+    journals = load_saved_journals()
+    journals[name] = summary
+    with open(DB_FILE, 'w', encoding='utf-8') as f:
+        json.dump(journals, f, ensure_ascii=False, indent=2)
+
+saved_journals = load_saved_journals()
+
 # --- Session State Initialization ---
 if "step" not in st.session_state:
     st.session_state.step = 1
@@ -110,8 +131,7 @@ st.divider()
 # Guard: Check API Key
 if not active_api_key:
     st.info(
-        "👈 **Vui lòng nhập Google Gemini API Key ở menu bên trái** "
-        "(hoặc thiết lập biến môi trường `GEMINI_API_KEY` / `st.secrets`) để bắt đầu."
+        "👈 **Vui lòng nhập Google Gemini API Key ở menu bên trái** để bắt đầu."
     )
     st.stop()
 
@@ -122,9 +142,21 @@ if not active_api_key:
 if st.session_state.step == 1:
     st.header("Bước 1: Cung cấp quy chuẩn tạp chí")
     st.markdown(
-        "Bạn có thể dán đoạn văn bản quy định của tạp chí, hoặc tải lên bài báo mẫu (PDF/Word). "
+        "Bạn có thể chọn quy chuẩn đã lưu, dán đoạn văn bản quy định, hoặc tải lên bài báo mẫu (PDF/Word). "
         "AI sẽ phân tích cấu trúc trích dẫn theo 8 tiêu chí chuẩn mực."
     )
+    
+    if saved_journals:
+        st.subheader("📌 Chọn tạp chí đã lưu")
+        selected_journal = st.selectbox("Danh sách tạp chí:", ["-- Chọn một tạp chí --"] + list(saved_journals.keys()))
+        if selected_journal != "-- Chọn một tạp chí --":
+            if st.button("Sử dụng quy chuẩn này ➡", type="primary"):
+                st.session_state.guideline_summary = saved_journals[selected_journal]
+                st.session_state.step = 2
+                st.rerun()
+        st.divider()
+
+    st.subheader("📄 Hoặc phân tích tạp chí mới")
 
     # Text area bound to session state
     input_text = st.text_area(
@@ -190,6 +222,23 @@ elif st.session_state.step == 2:
 
     with st.expander("👁️ Xem trước hiển thị định dạng (Markdown)", expanded=False):
         st.markdown(st.session_state.guideline_summary)
+
+    st.divider()
+    st.markdown("**💾 Lưu quy chuẩn này cho lần sau (Tùy chọn)**")
+    col_save_name, col_save_btn = st.columns([3, 1])
+    with col_save_name:
+        journal_name_input = st.text_input("Tên tạp chí:", placeholder="VD: IEEE Transactions on AI")
+    with col_save_btn:
+        st.write("") # Padding for alignment
+        st.write("")
+        if st.button("Lưu Tạp chí"):
+            if journal_name_input.strip():
+                save_journal_summary(journal_name_input.strip(), st.session_state.guideline_summary)
+                st.success(f"Đã lưu '{journal_name_input.strip()}'!")
+            else:
+                st.warning("Vui lòng nhập tên tạp chí.")
+
+    st.divider()
 
     col_back, col_next = st.columns([1, 4])
     with col_back:

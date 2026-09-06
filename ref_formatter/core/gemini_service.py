@@ -13,30 +13,11 @@ from typing import Optional, Union, List, Any
 
 def resolve_api_key(user_input_key: Optional[str] = None) -> Optional[str]:
     """
-    Resolves the Gemini API key using hierarchical fallback:
-    1. User input from UI (if provided and non-empty)
-    2. os.environ["GEMINI_API_KEY"]
-    3. st.secrets.get("GEMINI_API_KEY") (safely handled)
-    
-    Returns trimmed API key string or None if not configured.
+    Resolves the Gemini API key strictly from the User UI input.
+    Ignores secrets to ensure no old invalid keys are picked up.
     """
     if user_input_key and user_input_key.strip():
         return user_input_key.strip()
-    
-    env_key = os.environ.get("GEMINI_API_KEY")
-    if env_key and env_key.strip():
-        return env_key.strip()
-    
-    try:
-        import streamlit as st
-        # st.secrets might raise FileNotFoundError if .streamlit/secrets.toml doesn't exist
-        if hasattr(st, "secrets") and "GEMINI_API_KEY" in st.secrets:
-            secret_key = st.secrets["GEMINI_API_KEY"]
-            if secret_key and str(secret_key).strip():
-                return str(secret_key).strip()
-    except Exception:
-        # Fall through safely if secrets.toml is missing or inaccessible
-        pass
         
     return None
 
