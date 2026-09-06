@@ -2,6 +2,9 @@
 Gemini service module for Streamlit Gemini Reference Formatter.
 Encapsulates API key resolution, multimodal file uploads (PDF File API, Word via python-docx),
 and prompt orchestration for guideline analysis and reference formatting.
+
+Uses the new google-genai SDK (Client-based architecture) to support
+modern API key formats (AQ. prefix keys from Google AI Studio).
 """
 
 import os
@@ -54,12 +57,21 @@ def extract_docx_text(file_bytes: bytes) -> str:
     return "\n\n".join(full_text_parts)
 
 
+def _create_client(api_key: str):
+    """
+    Creates a google-genai Client with the given API key.
+    Uses the new unified SDK that supports both AQ. and AIza key formats.
+    """
+    from google import genai
+    return genai.Client(api_key=api_key.strip())
+
+
 def extract_guideline_from_file_or_text(
     api_key: str,
     text: Optional[str] = None,
     file_bytes: Optional[bytes] = None,
     filename: Optional[str] = None,
-    model_name: str = "gemini-1.5-pro",
+    model_name: str = "gemini-2.0-flash",
 ) -> str:
     """
     Extracts and synthesizes academic reference rules across 8 standard dimensions.
@@ -75,8 +87,8 @@ def extract_guideline_from_file_or_text(
     if not has_text and not has_file:
         raise ValueError("Vui lòng cung cấp văn bản quy chuẩn hoặc tải lên tệp tài liệu mẫu (PDF/Word).")
 
-    import google.generativeai as genai
-    genai.configure(api_key=api_key.strip())
+    from google import genai
+    client = _create_client(api_key)
 
     prompt = """Bạn là một Chuyên gia Biên tập & Chuẩn hóa Tài liệu Tham khảo Khoa học.
 Nhiệm vụ của bạn là phân tích tài liệu/văn bản quy chuẩn được cung cấp và rút ra bộ quy tắc định dạng bắt buộc cho phần Tài liệu tham khảo (References).
@@ -93,9 +105,9 @@ Hãy phân tích kỹ lưỡng và trình bày tóm tắt rõ ràng theo đúng 
 
 Đưa ra ví dụ minh họa chuẩn xác cho từng loại tài liệu dựa trên đúng các quy tắc vừa tổng hợp."""
 
-    contents: List[Any] = [prompt]
+    contents_parts: List[Any] = []
     tmp_path: Optional[str] = None
-    gemini_file: Optional[Any] = None
+    uploaded_file_ref: Optional[Any] = None
 
     try:
         # Process attached file if present
@@ -105,49 +117,69 @@ Hãy phân tích kỹ lưỡng và trình bày tóm tắt rõ ràng theo đúng 
             if ext == ".docx":
                 # Local Word extraction via python-docx
                 docx_content = extract_docx_text(file_bytes)  # type: ignore[arg-type]
-                contents.append(f"\n\n--- NỘI DUNG TỪ TỆP WORD ({filename}) ---\n{docx_content}")
+                contents_parts.append(
+                    genai.types.Part.from_text(
+                        f"\n\n--- NỘI DUNG TỪ TỆP WORD ({filename}) ---\n{docx_content}"
+                    )
+                )
             elif ext == ".pdf":
-                # PDF upload via Gemini File API
+                # PDF upload via Gemini File API (new SDK)
                 with tempfile.NamedTemporaryFile(delete=False, suffix=".pdf") as tmp:
                     tmp.write(file_bytes)  # type: ignore[arg-type]
                     tmp_path = tmp.name
                 
-                # Upload to Gemini File API
-                gemini_file = genai.upload_file(path=tmp_path, mime_type="application/pdf")
+                # Upload to Gemini File API using new Client
+                uploaded_file_ref = client.files.upload(
+                    file=tmp_path,
+                    config={"mime_type": "application/pdf"},
+                )
                 
                 # Poll until file is ACTIVE
                 poll_start = time.time()
-                while gemini_file.state.name == "PROCESSING":
+                while uploaded_file_ref.state.name == "PROCESSING":
                     time.sleep(1)
-                    gemini_file = genai.get_file(gemini_file.name)
+                    uploaded_file_ref = client.files.get(name=uploaded_file_ref.name)
                     if time.time() - poll_start > 60:
                         raise TimeoutError("Quá thời gian chờ xử lý file PDF trên Gemini API (Timeout 60s).")
                 
-                if gemini_file.state.name == "FAILED":
-                    raise RuntimeError(f"Xử lý file PDF trên Gemini thất bại (State: {gemini_file.state.name}).")
+                if uploaded_file_ref.state.name == "FAILED":
+                    raise RuntimeError(f"Xử lý file PDF trên Gemini thất bại (State: {uploaded_file_ref.state.name}).")
                 
-                contents.append(gemini_file)
+                contents_parts.append(uploaded_file_ref)
             else:
                 # Text/plain or other format fallback
                 try:
                     plain_text = file_bytes.decode("utf-8")  # type: ignore[union-attr]
-                    contents.append(f"\n\n--- NỘI DUNG TỆP ({filename}) ---\n{plain_text}")
+                    contents_parts.append(
+                        genai.types.Part.from_text(
+                            f"\n\n--- NỘI DUNG TỆP ({filename}) ---\n{plain_text}"
+                        )
+                    )
                 except Exception:
                     raise ValueError(f"Định dạng tệp '{ext}' không được hỗ trợ. Vui lòng tải file PDF hoặc DOCX.")
 
         # Process user guideline text if provided
         if has_text:
-            contents.append(f"\n\n--- VĂN BẢN QUY CHUẨN ĐƯỢC CUNG CẤP ---\n{text}")
+            contents_parts.append(
+                genai.types.Part.from_text(
+                    f"\n\n--- VĂN BẢN QUY CHUẨN ĐƯỢC CUNG CẤP ---\n{text}"
+                )
+            )
 
-        model = genai.GenerativeModel(model_name)
-        response = model.generate_content(contents)
+        # Build the full contents list: prompt first, then file/text parts
+        full_contents = [prompt] + contents_parts
+
+        response = client.models.generate_content(
+            model=model_name,
+            contents=full_contents,
+        )
         return response.text
 
     finally:
         # Deterministic cleanup of ephemeral files (both local disk and remote cloud)
-        if gemini_file:
+        if uploaded_file_ref:
             try:
-                genai.delete_file(gemini_file.name)
+                client.files.delete(name=uploaded_file_ref.name)
             except Exception:
                 pass
         if tmp_path and os.path.exists(tmp_path):
@@ -161,7 +193,7 @@ def format_references(
     api_key: str,
     guideline_summary: str,
     raw_references: str,
-    model_name: str = "gemini-1.5-pro",
+    model_name: str = "gemini-2.0-flash",
 ) -> str:
     """
     Formats raw references according to approved guideline rules.
@@ -175,8 +207,7 @@ def format_references(
     if not raw_references or not raw_references.strip():
         raise ValueError("Danh sách tài liệu tham khảo thô trống. Vui lòng nhập dữ liệu.")
 
-    import google.generativeai as genai
-    genai.configure(api_key=api_key.strip())
+    client = _create_client(api_key)
 
     prompt = f"""Bạn là một Chuyên gia Biên tập & Chuẩn hóa Tài liệu Tham khảo Khoa học.
 Dựa vào bộ quy chuẩn đã được phê duyệt sau đây:
@@ -201,6 +232,8 @@ DANH SÁCH TLTK THÔ CẦN ĐỊNH DẠNG:
 {raw_references}
 """
 
-    model = genai.GenerativeModel(model_name)
-    response = model.generate_content(prompt)
+    response = client.models.generate_content(
+        model=model_name,
+        contents=prompt,
+    )
     return response.text
